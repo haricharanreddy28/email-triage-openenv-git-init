@@ -8,7 +8,7 @@ pinned: false
 tags:
   - openenv
 license: mit
-
+---
 # Email Triage OpenEnv
 
 A real-world reinforcement learning environment for training AI agents to triage, prioritize, and route customer emails.
