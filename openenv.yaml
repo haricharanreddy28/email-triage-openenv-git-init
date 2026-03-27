@@ -1,0 +1,97 @@
+name: email-triage-openenv
+version: "1.0.0"
+description: >
+  A real-world reinforcement learning environment for training AI agents
+  to triage, prioritize, categorize, and route customer emails.
+  Agents learn to distinguish urgent billing issues from spam, route
+  support requests correctly, and handle edge cases in customer communication.
+
+author: "your-name-here"
+license: "MIT"
+tags:
+  - email
+  - triage
+  - nlp
+  - customer-support
+  - real-world
+  - classification
+
+tasks:
+  - id: easy
+    description: "Triage 5 simple emails with clear spam, obvious urgency signals"
+    difficulty: easy
+    num_emails: 5
+
+  - id: medium
+    description: "Triage 10 emails with mixed signals and some ambiguous cases"
+    difficulty: medium
+    num_emails: 10
+
+  - id: hard
+    description: "Triage all 20 emails including enterprise edge cases and nuanced priorities"
+    difficulty: hard
+    num_emails: 20
+
+observation_space:
+  type: object
+  fields:
+    task_id:
+      type: string
+      description: "Which task is currently running"
+    email_id:
+      type: string
+      description: "Unique identifier for this email"
+    subject:
+      type: string
+      description: "Email subject line"
+    body:
+      type: string
+      description: "Full email body text"
+    sender:
+      type: string
+      description: "Sender email address"
+    step_number:
+      type: integer
+      description: "Current step (1-indexed)"
+    total_emails:
+      type: integer
+      description: "Total emails in this task"
+
+action_space:
+  type: object
+  fields:
+    priority:
+      type: string
+      enum: [urgent, normal, low]
+      description: "How urgently this email needs a response"
+    category:
+      type: string
+      enum: [billing, support, spam, inquiry]
+      description: "What type of email this is"
+    route_to:
+      type: string
+      enum: [billing_team, support_team, trash, sales_team]
+      description: "Which team or folder should handle this email"
+
+reward:
+  type: float
+  range: [0.0, 1.0]
+  description: >
+    Partial reward per email step.
+    Priority correct: +0.40 (partial credit for near-miss: +0.15)
+    Category correct: +0.35
+    Route correct: +0.25
+    Penalty: -0.30 for routing urgent email to trash
+
+baseline_scores:
+  easy: 0.85
+  medium: 0.78
+  hard: 0.71
+
+endpoints:
+  reset: POST /reset
+  step: POST /step
+  state: GET /state
+  tasks: GET /tasks
+  grader: POST /grader
+  baseline: POST /baseline
