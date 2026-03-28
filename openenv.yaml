@@ -84,9 +84,9 @@ reward:
     Penalty: -0.30 for routing urgent email to trash
 
 baseline_scores:
-  easy: 0.85
-  medium: 0.78
-  hard: 0.71
+  easy: 0.20
+  medium: 0.44
+  hard: 0.38
 
 endpoints:
   reset: POST /reset

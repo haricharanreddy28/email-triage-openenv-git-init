@@ -1,86 +1,89 @@
 """
-Baseline Inference Script — Email Triage OpenEnv
+Baseline Inference Script - Email Triage OpenEnv
 =================================================
-Runs an LLM agent (via OpenAI API) against all 3 tasks
-and produces reproducible baseline scores.
+Uses FREE Google Gemini API.
+
+Get your FREE Gemini API key at:
+  https://aistudio.google.com/apikey
 
 Usage:
-  python baseline.py                    # runs all 3 tasks
-  python baseline.py --task easy        # runs one task
+  python baseline.py                 # runs all 3 tasks
+  python baseline.py --task easy     # runs one task
 
 Requires:
-  OPENAI_API_KEY environment variable set
+  pip install google-genai
+  set GEMINI_API_KEY=your-key-here
 """
 
 import os
 import json
 import argparse
-from openai import OpenAI
+from google import genai
+from google.genai import types
 from environment import EmailTriageEnvironment, Action
 
-# ── Setup ────────────────────────────────────────
-
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+# ── Setup ─────────────────────────────────────────────────
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+client = genai.Client(api_key=GEMINI_API_KEY)
 env = EmailTriageEnvironment()
 
-SYSTEM_PROMPT = """You are an expert email triage agent for a SaaS customer support team.
+PROMPT_TEMPLATE = """You are an expert email triage agent. Classify each email into priority, category, and routing.
 
-For each email, you must output a JSON object with exactly these fields:
-{
-  "priority": "<urgent|normal|low>",
-  "category": "<billing|support|spam|inquiry>",
-  "route_to": "<billing_team|support_team|trash|sales_team>"
-}
+PRIORITY RULES (pick exactly one):
+- "urgent"  = needs response within hours. Use for: payment failed, charged twice, account suspended/locked, production down, API down, data breach, refund request, wrong bill amount, large enterprise inquiry (500+ users)
+- "normal"  = needs response within 1-2 days. Use for: general how-to questions, invoice received, subscription renewal reminder, partnership inquiry (not large enterprise), export data questions
+- "low"     = can wait or ignore. Use for: spam, newsletters, feature requests, student discount requests, resolved tickets, automated emails
 
-Guidelines:
-- urgent: needs action within hours (payment issues, account locked, production down, data breach)
-- normal: needs action within 1-2 days (general questions, invoices, renewal reminders)
-- low: can be addressed this week or ignored (newsletters, feature requests, resolved tickets)
+CATEGORY RULES (pick exactly one):
+- "billing"  = anything about money: payment failed, invoices, charges, refunds, wrong amount, subscriptions, renewal
+- "support"  = technical problems: bugs, crashes, login issues, API errors, data breach concerns, how-to questions, export questions
+- "spam"     = unsolicited: ads, scams, get-rich-quick, pharmaceutical spam, fake prizes
+- "inquiry"  = sales/business questions: pricing, plans, partnerships, feature requests, student discounts, newsletters
 
-- billing: payment, invoices, charges, refunds, subscriptions
-- support: technical issues, bugs, login problems, how-to questions
-- spam: unsolicited ads, scam emails, mass marketing
-- inquiry: sales questions, partnership requests, pricing, feature requests
+ROUTING RULES (must match category):
+- billing category  -> "billing_team"
+- support category  -> "support_team"  
+- spam category     -> "trash"
+- inquiry category  -> "sales_team"
+  EXCEPTION: newsletters and resolved tickets -> "trash" even if category is inquiry/support
 
-- billing_team: all billing/payment emails
-- support_team: all technical support emails
-- trash: spam and low-value automated emails
-- sales_team: sales inquiries, partnership, enterprise deals, pricing questions
+IMPORTANT EXCEPTIONS:
+- "data breach" emails -> category="support", route_to="support_team", priority="urgent"
+- "production down" or "API rate limit exceeded" -> priority="urgent", category="support"
+- "enterprise 500 users" bulk inquiry -> priority="urgent", category="inquiry", route_to="sales_team"
+- "newsletter" or "subscription renewal reminder" from the platform itself -> priority="low", category="inquiry", route_to="trash"
+- "resolved ticket / closing ticket" -> priority="low", category="support", route_to="support_team"
 
-Respond with ONLY the JSON object. No explanation. No markdown.
-"""
+Output ONLY this JSON. No markdown. No explanation. No backticks:
+{{"priority": "...", "category": "...", "route_to": "..."}}
 
-# ── Agent ────────────────────────────────────────
-
-def call_llm(subject: str, body: str, sender: str) -> dict:
-    """Call the LLM and parse its JSON response."""
-    user_message = f"""
-Email to triage:
+Email to classify:
 FROM: {sender}
 SUBJECT: {subject}
-BODY: {body}
+BODY: {body}"""
 
-Classify this email now.
-"""
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",   # cheap and fast, good enough for baseline
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ],
-        temperature=0,    # deterministic = reproducible scores
-        max_tokens=100,
+
+# ── LLM Call ──────────────────────────────────────────────
+
+def call_llm(subject: str, body: str, sender: str) -> dict:
+    prompt = PROMPT_TEMPLATE.format(sender=sender, subject=subject, body=body)
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=0,
+            max_output_tokens=80,
+        ),
     )
-    raw = response.choices[0].message.content.strip()
-
-    # Strip any accidental markdown fences
+    raw = response.text.strip()
     raw = raw.replace("```json", "").replace("```", "").strip()
     return json.loads(raw)
 
 
+# ── Task Runner ───────────────────────────────────────────
+
 def run_task(task_id: str, verbose: bool = True) -> float:
-    """Run the baseline agent on a single task and return the score."""
-    obs_dict = env.reset(task_id=task_id)
+    obs = env.reset(task_id=task_id)
 
     if verbose:
         print(f"\n{'='*60}")
@@ -91,43 +94,33 @@ def run_task(task_id: str, verbose: bool = True) -> float:
     step_count = 0
 
     while True:
-        # Check if done
-        current_state = env.state()
-        if current_state["done"]:
+        if obs.email_id == "DONE":
             break
 
-        # Parse current observation
-        subject = obs_dict.get("subject", "")
-        body = obs_dict.get("body", "")
-        sender = obs_dict.get("sender", "")
-        email_id = obs_dict.get("email_id", "")
-
-        if email_id == "DONE":
-            break
-
-        # Ask LLM to classify
         try:
-            prediction = call_llm(subject, body, sender)
+            prediction = call_llm(obs.subject, obs.body, obs.sender)
         except Exception as e:
             if verbose:
                 print(f"  [Step {step_count+1}] LLM error: {e}. Using fallback.")
-            prediction = {"priority": "normal", "category": "inquiry", "route_to": "sales_team"}
+            prediction = {"priority": "normal", "category": "support", "route_to": "support_team"}
 
         action = Action(
             priority=prediction.get("priority", "normal"),
-            category=prediction.get("category", "inquiry"),
-            route_to=prediction.get("route_to", "sales_team"),
+            category=prediction.get("category", "support"),
+            route_to=prediction.get("route_to", "support_team"),
         )
 
-        obs_dict, reward, done, info = env.step(action)
+        obs, reward, done, info = env.step(action)
         total_reward += reward
         step_count += 1
 
         if verbose:
-            correct = "✅" if (info["correct_priority"] and info["correct_category"] and info["correct_route"]) else "⚠️ "
-            print(f"  {correct} Email {step_count}: reward={reward:.2f} | "
-                  f"priority={action.priority} (expected: {info['label']['priority']}) | "
-                  f"category={action.category} (expected: {info['label']['category']})")
+            all_correct = info["correct_priority"] and info["correct_category"] and info["correct_route"]
+            status = "[OK]" if all_correct else "[--]"
+            print(f"  {status} Email {step_count}: reward={reward:.2f} | "
+                  f"priority={action.priority} (want: {info['label']['priority']}) | "
+                  f"category={action.category} (want: {info['label']['category']}) | "
+                  f"route={action.route_to} (want: {info['label']['route_to']})")
 
         if done:
             break
@@ -136,24 +129,24 @@ def run_task(task_id: str, verbose: bool = True) -> float:
 
     if verbose:
         print(f"\n  Final score: {final_score}")
-        print(f"  Total emails processed: {step_count}")
+        print(f"  Emails processed: {step_count}")
 
     return final_score
 
 
-# ── Main ─────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="Run Email Triage baseline agent")
     parser.add_argument("--task", type=str, default=None,
                         choices=["easy", "medium", "hard"],
-                        help="Which task to run (default: all)")
+                        help="Task to run (default: all)")
     args = parser.parse_args()
 
-    if not os.environ.get("OPENAI_API_KEY"):
-        print("⚠️  WARNING: OPENAI_API_KEY not set. Set it with:")
-        print("   Windows: set OPENAI_API_KEY=sk-...")
-        print("   Mac/Linux: export OPENAI_API_KEY=sk-...")
+    if not GEMINI_API_KEY:
+        print("ERROR: GEMINI_API_KEY not set!")
+        print("Get your FREE key at: https://aistudio.google.com/apikey")
+        print("Then run: set GEMINI_API_KEY=AIza...")
         return
 
     tasks_to_run = [args.task] if args.task else ["easy", "medium", "hard"]
@@ -167,7 +160,7 @@ def main():
     print("  BASELINE RESULTS SUMMARY")
     print(f"{'='*60}")
     for task_id, score in results.items():
-        bar = "█" * int(score * 20)
+        bar = "#" * int(score * 20)
         print(f"  {task_id:<8} {score:.4f}  {bar}")
     print()
 
