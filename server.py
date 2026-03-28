@@ -1,21 +1,13 @@
 """
-FastAPI Server — Email Triage OpenEnv
-======================================
-Exposes all required OpenEnv endpoints:
-  POST /reset
-  POST /step
-  GET  /state
-  GET  /tasks
-  POST /grader
-  POST /baseline
+FastAPI Server - Email Triage OpenEnv
+Exposes all required OpenEnv endpoints.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-import subprocess
-import sys
+import subprocess, sys
 
 from environment import EmailTriageEnvironment, Action, Observation
 
@@ -25,7 +17,6 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Allow cross-origin requests (needed for HF Spaces)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -33,33 +24,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# One shared environment instance
 env = EmailTriageEnvironment()
 
 
-# ── Request / Response models ──────────────────────────────
-
-class ResetRequest(BaseModel):
-    task_id: str = "easy"   # "easy" | "medium" | "hard"
-
 class StepRequest(BaseModel):
-    priority: str   # "urgent" | "normal" | "low"
-    category: str   # "billing" | "support" | "spam" | "inquiry"
-    route_to: str   # "billing_team" | "support_team" | "trash" | "sales_team"
+    priority: str
+    category: str
+    route_to: str
 
 class GraderRequest(BaseModel):
     task_id: str
-    actions: list[dict]   # list of {priority, category, route_to}
+    actions: list[dict]
 
 class BaselineRequest(BaseModel):
     task_ids: list[str] = ["easy", "medium", "hard"]
 
 
-# ── Endpoints ──────────────────────────────────────────────
-
 @app.get("/")
 def root():
-    """Health check — returns 200. Required by OpenEnv pre-submission checklist."""
+    """Health check - returns 200."""
     return {
         "status": "ok",
         "environment": "Email Triage OpenEnv",
@@ -67,24 +50,31 @@ def root():
         "endpoints": ["/reset", "/step", "/state", "/tasks", "/grader", "/baseline"],
     }
 
+@app.get("/reset")
 @app.post("/reset")
-def reset(request: ResetRequest):
+async def reset(request: Request, task_id: str = "easy"):
     """
-    Start a new episode.
+    Start a new episode. Accepts GET or POST with optional task_id.
+    POST body: {"task_id": "easy"} (optional)
     Returns the first email observation.
     """
     try:
-        obs = env.reset(task_id=request.task_id)
+        # Try to parse JSON body if POST
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                task_id = body.get("task_id", task_id)
+        except Exception:
+            pass  # No body or not JSON - use default
+
+        obs = env.reset(task_id=task_id)
         return obs.model_dump()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/step")
 def step(request: StepRequest):
-    """
-    Take one action (classify one email).
-    Returns: observation, reward, done, info
-    """
+    """Take one action (classify one email)."""
     try:
         action = Action(
             priority=request.priority,
@@ -108,19 +98,12 @@ def state():
 
 @app.get("/tasks")
 def tasks():
-    """
-    Return all tasks with action schema.
-    Required by pre-submission checklist.
-    """
+    """Return all tasks with action schema."""
     return env.get_tasks()
 
 @app.post("/grader")
 def grader(request: GraderRequest):
-    """
-    Score a completed episode given a list of actions.
-    Required by pre-submission checklist.
-    Returns: score between 0.0 and 1.0
-    """
+    """Score a completed episode given a list of actions."""
     try:
         score = env.grade_episode(request.task_id, request.actions)
         return {
@@ -133,20 +116,14 @@ def grader(request: GraderRequest):
 
 @app.post("/baseline")
 def baseline(request: BaselineRequest):
-    """
-    Run baseline inference script against all requested tasks.
-    Required by pre-submission checklist.
-    Returns baseline scores for all tasks.
-    """
-    import subprocess, sys
+    """Run baseline inference script against all requested tasks."""
     results = {}
     for task_id in request.task_ids:
         try:
             result = subprocess.run(
-                [sys.executable, "baseline.py", "--task", task_id],
+                [sys.executable, "inference.py", "--task", task_id],
                 capture_output=True, text=True, timeout=120
             )
-            # Parse score from output
             for line in result.stdout.splitlines():
                 if "Final score" in line:
                     score = float(line.split(":")[-1].strip())
