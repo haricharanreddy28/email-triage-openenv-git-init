@@ -21,8 +21,7 @@ dependencies = [
 ]
 
 [project.scripts]
-server = "server:app"
-start = "uvicorn server:app --host 0.0.0.0 --port 7860"
+server = "server.app:main"
 
 [project.urls]
 Homepage = "https://huggingface.co/spaces/haricharan28/email-triage-openenv"
@@ -31,4 +30,4 @@ Repository = "https://github.com/haricharanreddy28/email-triage-openenv-git-init
 [tool.openenv]
 name = "email-triage-openenv"
 version = "1.0.0"
-entrypoint = "server:app"
+entrypoint = "server.app:main"
